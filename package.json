@@ -17,7 +17,7 @@
     "mocha": "^2.1.0"
   },
   "dependencies": {},
-  "main": "jmespath.js",
+  "main": "jmespath.cjs",
   "directories": {
     "test": "test"
   },
