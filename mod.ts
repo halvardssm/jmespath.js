@@ -1,3 +1,3 @@
-import { search } from "./jmespath.cjs";
+import { search } from "./lib/mod.js";
 
 export { search }

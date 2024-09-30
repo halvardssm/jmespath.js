@@ -1,10 +1,7 @@
 import { join, resolve } from "@std/path";
 import { assertEquals, assertThrows } from "@std/assert";
 
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
-const { search } = require("../jmespath.cjs");
-
+import { search } from "../lib/mod.js";
 
 type ComplianceTestCases = {
   expression: string;
