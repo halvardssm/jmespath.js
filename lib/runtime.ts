@@ -1,529 +1,702 @@
+import { unreachable } from "@std/assert";
 import {
-  TYPE_ANY,
-  TOK_AND,
-  TOK_COLON,
-  TOK_COMMA,
-  TOK_CURRENT,
-  TYPE_ARRAY,
-  TOK_DOT,TOK_EOF,TOK_EQ,TOK_EXPREF,TOK_FILTER,TOK_FLATTEN,TOK_GT,TOK_GTE,TOK_LBRACE,TOK_LBRACKET,TOK_LITERAL,TOK_LPAREN,TOK_LT,TOK_LTE,TOK_NE,TOK_NOT,TOK_NUMBER,TOK_OR,TOK_PIPE,TOK_QUOTEDIDENTIFIER,TOK_RBRACE,TOK_RBRACKET,TOK_RPAREN,TOK_STAR,TOK_UNQUOTEDIDENTIFIER,TYPE_ARRAY_NUMBER,TYPE_ARRAY_STRING,TYPE_BOOLEAN,TYPE_EXPREF,TYPE_NAME_TABLE,TYPE_NULL,TYPE_NUMBER,TYPE_OBJECT,TYPE_STRING,isAlpha,isAlphaNum,isArray,isFalse,isNum,isObject,basicTokens,bindingPower,objValues,operatorStartToken,skipChars,strictDeepEqual
-} from "./utils.js"
+  fError,
+  InvalidArityError,
+  InvalidTypeError,
+  UnknownFunctionError,
+} from "./errors.ts";
+import {
+  type JSONArray,
+  type JSONObject,
+  type JSONValue,
+  mapTypeCodeToName,
+  TOKEN,
+  TYPE_CODE,
+  TYPE_NAME,
+  type TypeCode,
+} from "./structs.ts";
+import type { TreeInterpreter } from "./tree-interpreter.ts";
+import { assertIsArray, isObject } from "./utils.ts";
+import type { ParserAst } from "./parser.ts";
 
-export function Runtime(interpreter) {
+export type RuntimeFunctionTableElementSignature = {
+  types: TypeCode[];
+  constiadic?: true;
+};
+export type RuntimeFunctionTableElement = {
+  // deno-lint-ignore no-explicit-any
+  func: (resolvedArgs: any) => any;
+  signature: RuntimeFunctionTableElementSignature[];
+};
+export type RuntimeFunctionTable = Record<string, RuntimeFunctionTableElement>;
+
+export class Runtime {
+  readonly _interpreter: TreeInterpreter;
+
+  readonly functionTable: RuntimeFunctionTable = {
+    // name: [function, <signature>]
+    // The <signature> can be:
+    //
+    // {
+    //   args: [[type1, type2], [type1, type2]],
+    //   constiadic: true|false
+    // }
+    //
+    // Each arg in the arg list is a list of valid types
+    // (if the function is overloaded and supports multiple
+    // types.  If the type is "any" then no type checking
+    // occurs on the argument.  constiadic is optional
+    // and if not provided is assumed to be false.
+    abs: {
+      func: this.#functionAbs,
+      signature: [{ types: [TYPE_CODE.Number] }],
+    },
+    avg: {
+      func: this.#functionAvg,
+      signature: [{ types: [TYPE_CODE.ArrayNumber] }],
+    },
+    ceil: {
+      func: this.#functionCeil,
+      signature: [{ types: [TYPE_CODE.Number] }],
+    },
+    contains: {
+      func: this.#functionContains,
+      signature: [
+        { types: [TYPE_CODE.String, TYPE_CODE.Array] },
+        { types: [TYPE_CODE.Any] },
+      ],
+    },
+    "ends_with": {
+      func: this.#functionEndsWith,
+      signature: [
+        { types: [TYPE_CODE.String] },
+        { types: [TYPE_CODE.String] },
+      ],
+    },
+    floor: {
+      func: this.#functionFloor,
+      signature: [{ types: [TYPE_CODE.Number] }],
+    },
+    length: {
+      func: this.#functionLength,
+      signature: [{
+        types: [
+          TYPE_CODE.String,
+          TYPE_CODE.Array,
+          TYPE_CODE.Object,
+        ],
+      }],
+    },
+    map: {
+      func: this.#functionMap,
+      signature: [{ types: [TYPE_CODE.Expref] }, {
+        types: [TYPE_CODE.Array],
+      }],
+    },
+    max: {
+      func: this.#functionMax,
+      signature: [{
+        types: [
+          TYPE_CODE.ArrayNumber,
+          TYPE_CODE.ArrayString,
+        ],
+      }],
+    },
+    "merge": {
+      func: this.#functionMerge,
+      signature: [{ types: [TYPE_CODE.Object], constiadic: true }],
+    },
+    "max_by": {
+      func: this.#functionMaxBy,
+      signature: [{ types: [TYPE_CODE.Array] }, {
+        types: [TYPE_CODE.Expref],
+      }],
+    },
+    sum: {
+      func: this.#functionSum,
+      signature: [{ types: [TYPE_CODE.ArrayNumber] }],
+    },
+    "starts_with": {
+      func: this.#functionStartsWith,
+      signature: [{ types: [TYPE_CODE.String] }, {
+        types: [TYPE_CODE.String],
+      }],
+    },
+    min: {
+      func: this.#functionMin,
+      signature: [{
+        types: [
+          TYPE_CODE.ArrayNumber,
+          TYPE_CODE.ArrayString,
+        ],
+      }],
+    },
+    "min_by": {
+      func: this.#functionMinBy,
+      signature: [
+        { types: [TYPE_CODE.Array] },
+        { types: [TYPE_CODE.Expref] },
+      ],
+    },
+    type: {
+      func: this.#functionType,
+      signature: [{ types: [TYPE_CODE.Any] }],
+    },
+    keys: {
+      func: this.#functionKeys,
+      signature: [{ types: [TYPE_CODE.Object] }],
+    },
+    values: {
+      func: this.#functionValues,
+      signature: [{ types: [TYPE_CODE.Object] }],
+    },
+    sort: {
+      func: this.#functionSort,
+      signature: [
+        {
+          types: [
+            TYPE_CODE.ArrayString,
+            TYPE_CODE.ArrayNumber,
+          ],
+        },
+      ],
+    },
+    "sort_by": {
+      func: this.#functionSortBy,
+      signature: [
+        { types: [TYPE_CODE.Array] },
+        { types: [TYPE_CODE.Expref] },
+      ],
+    },
+    join: {
+      func: this.#functionJoin,
+      signature: [
+        { types: [TYPE_CODE.String] },
+        { types: [TYPE_CODE.ArrayString] },
+      ],
+    },
+    reverse: {
+      func: this.#functionReverse,
+      signature: [
+        { types: [TYPE_CODE.String, TYPE_CODE.Array] },
+      ],
+    },
+    "to_array": {
+      func: this.#functionToArray,
+      signature: [{ types: [TYPE_CODE.Any] }],
+    },
+    "to_string": {
+      func: this.#functionToString,
+      signature: [{ types: [TYPE_CODE.Any] }],
+    },
+    "to_number": {
+      func: this.#functionToNumber,
+      signature: [{ types: [TYPE_CODE.Any] }],
+    },
+    "not_null": {
+      func: this.#functionNotNull,
+      signature: [{ types: [TYPE_CODE.Any], constiadic: true }],
+    },
+  } as const;
+
+  constructor(interpreter: TreeInterpreter) {
     this._interpreter = interpreter;
-    this.functionTable = {
-        // name: [function, <signature>]
-        // The <signature> can be:
-        //
-        // {
-        //   args: [[type1, type2], [type1, type2]],
-        //   variadic: true|false
-        // }
-        //
-        // Each arg in the arg list is a list of valid types
-        // (if the function is overloaded and supports multiple
-        // types.  If the type is "any" then no type checking
-        // occurs on the argument.  Variadic is optional
-        // and if not provided is assumed to be false.
-        abs: {_func: this._functionAbs, _signature: [{types: [TYPE_NUMBER]}]},
-        avg: {_func: this._functionAvg, _signature: [{types: [TYPE_ARRAY_NUMBER]}]},
-        ceil: {_func: this._functionCeil, _signature: [{types: [TYPE_NUMBER]}]},
-        contains: {
-            _func: this._functionContains,
-            _signature: [{types: [TYPE_STRING, TYPE_ARRAY]},
-                        {types: [TYPE_ANY]}]},
-        "ends_with": {
-            _func: this._functionEndsWith,
-            _signature: [{types: [TYPE_STRING]}, {types: [TYPE_STRING]}]},
-        floor: {_func: this._functionFloor, _signature: [{types: [TYPE_NUMBER]}]},
-        length: {
-            _func: this._functionLength,
-            _signature: [{types: [TYPE_STRING, TYPE_ARRAY, TYPE_OBJECT]}]},
-        map: {
-            _func: this._functionMap,
-            _signature: [{types: [TYPE_EXPREF]}, {types: [TYPE_ARRAY]}]},
-        max: {
-            _func: this._functionMax,
-            _signature: [{types: [TYPE_ARRAY_NUMBER, TYPE_ARRAY_STRING]}]},
-        "merge": {
-            _func: this._functionMerge,
-            _signature: [{types: [TYPE_OBJECT], variadic: true}]
-        },
-        "max_by": {
-          _func: this._functionMaxBy,
-          _signature: [{types: [TYPE_ARRAY]}, {types: [TYPE_EXPREF]}]
-        },
-        sum: {_func: this._functionSum, _signature: [{types: [TYPE_ARRAY_NUMBER]}]},
-        "starts_with": {
-            _func: this._functionStartsWith,
-            _signature: [{types: [TYPE_STRING]}, {types: [TYPE_STRING]}]},
-        min: {
-            _func: this._functionMin,
-            _signature: [{types: [TYPE_ARRAY_NUMBER, TYPE_ARRAY_STRING]}]},
-        "min_by": {
-          _func: this._functionMinBy,
-          _signature: [{types: [TYPE_ARRAY]}, {types: [TYPE_EXPREF]}]
-        },
-        type: {_func: this._functionType, _signature: [{types: [TYPE_ANY]}]},
-        keys: {_func: this._functionKeys, _signature: [{types: [TYPE_OBJECT]}]},
-        values: {_func: this._functionValues, _signature: [{types: [TYPE_OBJECT]}]},
-        sort: {_func: this._functionSort, _signature: [{types: [TYPE_ARRAY_STRING, TYPE_ARRAY_NUMBER]}]},
-        "sort_by": {
-          _func: this._functionSortBy,
-          _signature: [{types: [TYPE_ARRAY]}, {types: [TYPE_EXPREF]}]
-        },
-        join: {
-            _func: this._functionJoin,
-            _signature: [
-                {types: [TYPE_STRING]},
-                {types: [TYPE_ARRAY_STRING]}
-            ]
-        },
-        reverse: {
-            _func: this._functionReverse,
-            _signature: [{types: [TYPE_STRING, TYPE_ARRAY]}]},
-        "to_array": {_func: this._functionToArray, _signature: [{types: [TYPE_ANY]}]},
-        "to_string": {_func: this._functionToString, _signature: [{types: [TYPE_ANY]}]},
-        "to_number": {_func: this._functionToNumber, _signature: [{types: [TYPE_ANY]}]},
-        "not_null": {
-            _func: this._functionNotNull,
-            _signature: [{types: [TYPE_ANY], variadic: true}]
-        }
-    };
   }
 
-  Runtime.prototype = {
-    callFunction: function(name, resolvedArgs) {
-      var functionEntry = this.functionTable[name];
-      if (functionEntry === undefined) {
-          throw new Error("Unknown function: " + name + "()");
-      }
-      this._validateArgs(name, resolvedArgs, functionEntry._signature);
-      return functionEntry._func.call(this, resolvedArgs);
-    },
-
-    _validateArgs: function(name, args, signature) {
-        // Validating the args requires validating
-        // the correct arity and the correct type of each arg.
-        // If the last argument is declared as variadic, then we need
-        // a minimum number of args to be required.  Otherwise it has to
-        // be an exact amount.
-        var pluralized;
-        if (signature[signature.length - 1].variadic) {
-            if (args.length < signature.length) {
-                pluralized = signature.length === 1 ? " argument" : " arguments";
-                throw new Error("ArgumentError: " + name + "() " +
-                                "takes at least" + signature.length + pluralized +
-                                " but received " + args.length);
-            }
-        } else if (args.length !== signature.length) {
-            pluralized = signature.length === 1 ? " argument" : " arguments";
-            throw new Error("ArgumentError: " + name + "() " +
-                            "takes " + signature.length + pluralized +
-                            " but received " + args.length);
-        }
-        var currentSpec;
-        var actualType;
-        var typeMatched;
-        for (var i = 0; i < signature.length; i++) {
-            typeMatched = false;
-            currentSpec = signature[i].types;
-            actualType = this._getTypeName(args[i]);
-            for (var j = 0; j < currentSpec.length; j++) {
-                if (this._typeMatches(actualType, currentSpec[j], args[i])) {
-                    typeMatched = true;
-                    break;
-                }
-            }
-            if (!typeMatched) {
-                var expected = currentSpec
-                    .map(function(typeIdentifier) {
-                        return TYPE_NAME_TABLE[typeIdentifier];
-                    })
-                    .join(',');
-                throw new Error("TypeError: " + name + "() " +
-                                "expected argument " + (i + 1) +
-                                " to be type " + expected +
-                                " but received type " +
-                                TYPE_NAME_TABLE[actualType] + " instead.");
-            }
-        }
-    },
-
-    _typeMatches: function(actual, expected, argValue) {
-        if (expected === TYPE_ANY) {
-            return true;
-        }
-        if (expected === TYPE_ARRAY_STRING ||
-            expected === TYPE_ARRAY_NUMBER ||
-            expected === TYPE_ARRAY) {
-            // The expected type can either just be array,
-            // or it can require a specific subtype (array of numbers).
-            //
-            // The simplest case is if "array" with no subtype is specified.
-            if (expected === TYPE_ARRAY) {
-                return actual === TYPE_ARRAY;
-            } else if (actual === TYPE_ARRAY) {
-                // Otherwise we need to check subtypes.
-                // I think this has potential to be improved.
-                var subtype;
-                if (expected === TYPE_ARRAY_NUMBER) {
-                  subtype = TYPE_NUMBER;
-                } else if (expected === TYPE_ARRAY_STRING) {
-                  subtype = TYPE_STRING;
-                }
-                for (var i = 0; i < argValue.length; i++) {
-                    if (!this._typeMatches(
-                            this._getTypeName(argValue[i]), subtype,
-                                             argValue[i])) {
-                        return false;
-                    }
-                }
-                return true;
-            }
-        } else {
-            return actual === expected;
-        }
-    },
-    _getTypeName: function(obj) {
-        switch (Object.prototype.toString.call(obj)) {
-            case "[object String]":
-              return TYPE_STRING;
-            case "[object Number]":
-              return TYPE_NUMBER;
-            case "[object Array]":
-              return TYPE_ARRAY;
-            case "[object Boolean]":
-              return TYPE_BOOLEAN;
-            case "[object Null]":
-              return TYPE_NULL;
-            case "[object Object]":
-              // Check if it's an expref.  If it has, it's been
-              // tagged with a jmespathType attr of 'Expref';
-              if (obj.jmespathType === TOK_EXPREF) {
-                return TYPE_EXPREF;
-              } else {
-                return TYPE_OBJECT;
-              }
-        }
-    },
-
-    _functionStartsWith: function(resolvedArgs) {
-        return resolvedArgs[0].lastIndexOf(resolvedArgs[1]) === 0;
-    },
-
-    _functionEndsWith: function(resolvedArgs) {
-        var searchStr = resolvedArgs[0];
-        var suffix = resolvedArgs[1];
-        return searchStr.indexOf(suffix, searchStr.length - suffix.length) !== -1;
-    },
-
-    _functionReverse: function(resolvedArgs) {
-        var typeName = this._getTypeName(resolvedArgs[0]);
-        if (typeName === TYPE_STRING) {
-          var originalStr = resolvedArgs[0];
-          var reversedStr = "";
-          for (var i = originalStr.length - 1; i >= 0; i--) {
-              reversedStr += originalStr[i];
-          }
-          return reversedStr;
-        } else {
-          var reversedArray = resolvedArgs[0].slice(0);
-          reversedArray.reverse();
-          return reversedArray;
-        }
-    },
-
-    _functionAbs: function(resolvedArgs) {
-      return Math.abs(resolvedArgs[0]);
-    },
-
-    _functionCeil: function(resolvedArgs) {
-        return Math.ceil(resolvedArgs[0]);
-    },
-
-    _functionAvg: function(resolvedArgs) {
-        var sum = 0;
-        var inputArray = resolvedArgs[0];
-        for (var i = 0; i < inputArray.length; i++) {
-            sum += inputArray[i];
-        }
-        return sum / inputArray.length;
-    },
-
-    _functionContains: function(resolvedArgs) {
-        return resolvedArgs[0].indexOf(resolvedArgs[1]) >= 0;
-    },
-
-    _functionFloor: function(resolvedArgs) {
-        return Math.floor(resolvedArgs[0]);
-    },
-
-    _functionLength: function(resolvedArgs) {
-       if (!isObject(resolvedArgs[0])) {
-         return resolvedArgs[0].length;
-       } else {
-         // As far as I can tell, there's no way to get the length
-         // of an object without O(n) iteration through the object.
-         return Object.keys(resolvedArgs[0]).length;
-       }
-    },
-
-    _functionMap: function(resolvedArgs) {
-      var mapped = [];
-      var interpreter = this._interpreter;
-      var exprefNode = resolvedArgs[0];
-      var elements = resolvedArgs[1];
-      for (var i = 0; i < elements.length; i++) {
-          mapped.push(interpreter.visit(exprefNode, elements[i]));
-      }
-      return mapped;
-    },
-
-    _functionMerge: function(resolvedArgs) {
-      var merged = {};
-      for (var i = 0; i < resolvedArgs.length; i++) {
-        var current = resolvedArgs[i];
-        for (var key in current) {
-          merged[key] = current[key];
-        }
-      }
-      return merged;
-    },
-
-    _functionMax: function(resolvedArgs) {
-      if (resolvedArgs[0].length > 0) {
-        var typeName = this._getTypeName(resolvedArgs[0][0]);
-        if (typeName === TYPE_NUMBER) {
-          return Math.max.apply(Math, resolvedArgs[0]);
-        } else {
-          var elements = resolvedArgs[0];
-          var maxElement = elements[0];
-          for (var i = 1; i < elements.length; i++) {
-              if (maxElement.localeCompare(elements[i]) < 0) {
-                  maxElement = elements[i];
-              }
-          }
-          return maxElement;
-        }
-      } else {
-          return null;
-      }
-    },
-
-    _functionMin: function(resolvedArgs) {
-      if (resolvedArgs[0].length > 0) {
-        var typeName = this._getTypeName(resolvedArgs[0][0]);
-        if (typeName === TYPE_NUMBER) {
-          return Math.min.apply(Math, resolvedArgs[0]);
-        } else {
-          var elements = resolvedArgs[0];
-          var minElement = elements[0];
-          for (var i = 1; i < elements.length; i++) {
-              if (elements[i].localeCompare(minElement) < 0) {
-                  minElement = elements[i];
-              }
-          }
-          return minElement;
-        }
-      } else {
-        return null;
-      }
-    },
-
-    _functionSum: function(resolvedArgs) {
-      var sum = 0;
-      var listToSum = resolvedArgs[0];
-      for (var i = 0; i < listToSum.length; i++) {
-        sum += listToSum[i];
-      }
-      return sum;
-    },
-
-    _functionType: function(resolvedArgs) {
-        switch (this._getTypeName(resolvedArgs[0])) {
-          case TYPE_NUMBER:
-            return "number";
-          case TYPE_STRING:
-            return "string";
-          case TYPE_ARRAY:
-            return "array";
-          case TYPE_OBJECT:
-            return "object";
-          case TYPE_BOOLEAN:
-            return "boolean";
-          case TYPE_EXPREF:
-            return "expref";
-          case TYPE_NULL:
-            return "null";
-        }
-    },
-
-    _functionKeys: function(resolvedArgs) {
-        return Object.keys(resolvedArgs[0]);
-    },
-
-    _functionValues: function(resolvedArgs) {
-        var obj = resolvedArgs[0];
-        var keys = Object.keys(obj);
-        var values = [];
-        for (var i = 0; i < keys.length; i++) {
-            values.push(obj[keys[i]]);
-        }
-        return values;
-    },
-
-    _functionJoin: function(resolvedArgs) {
-        var joinChar = resolvedArgs[0];
-        var listJoin = resolvedArgs[1];
-        return listJoin.join(joinChar);
-    },
-
-    _functionToArray: function(resolvedArgs) {
-        if (this._getTypeName(resolvedArgs[0]) === TYPE_ARRAY) {
-            return resolvedArgs[0];
-        } else {
-            return [resolvedArgs[0]];
-        }
-    },
-
-    _functionToString: function(resolvedArgs) {
-        if (this._getTypeName(resolvedArgs[0]) === TYPE_STRING) {
-            return resolvedArgs[0];
-        } else {
-            return JSON.stringify(resolvedArgs[0]);
-        }
-    },
-
-    _functionToNumber: function(resolvedArgs) {
-        var typeName = this._getTypeName(resolvedArgs[0]);
-        var convertedValue;
-        if (typeName === TYPE_NUMBER) {
-            return resolvedArgs[0];
-        } else if (typeName === TYPE_STRING) {
-            convertedValue = +resolvedArgs[0];
-            if (!isNaN(convertedValue)) {
-                return convertedValue;
-            }
-        }
-        return null;
-    },
-
-    _functionNotNull: function(resolvedArgs) {
-        for (var i = 0; i < resolvedArgs.length; i++) {
-            if (this._getTypeName(resolvedArgs[i]) !== TYPE_NULL) {
-                return resolvedArgs[i];
-            }
-        }
-        return null;
-    },
-
-    _functionSort: function(resolvedArgs) {
-        var sortedArray = resolvedArgs[0].slice(0);
-        sortedArray.sort();
-        return sortedArray;
-    },
-
-    _functionSortBy: function(resolvedArgs) {
-        var sortedArray = resolvedArgs[0].slice(0);
-        if (sortedArray.length === 0) {
-            return sortedArray;
-        }
-        var interpreter = this._interpreter;
-        var exprefNode = resolvedArgs[1];
-        var requiredType = this._getTypeName(
-            interpreter.visit(exprefNode, sortedArray[0]));
-        if ([TYPE_NUMBER, TYPE_STRING].indexOf(requiredType) < 0) {
-            throw new Error("TypeError");
-        }
-        var that = this;
-        // In order to get a stable sort out of an unstable
-        // sort algorithm, we decorate/sort/undecorate (DSU)
-        // by creating a new list of [index, element] pairs.
-        // In the cmp function, if the evaluated elements are
-        // equal, then the index will be used as the tiebreaker.
-        // After the decorated list has been sorted, it will be
-        // undecorated to extract the original elements.
-        var decorated = [];
-        for (var i = 0; i < sortedArray.length; i++) {
-          decorated.push([i, sortedArray[i]]);
-        }
-        decorated.sort(function(a, b) {
-          var exprA = interpreter.visit(exprefNode, a[1]);
-          var exprB = interpreter.visit(exprefNode, b[1]);
-          if (that._getTypeName(exprA) !== requiredType) {
-              throw new Error(
-                  "TypeError: expected " + requiredType + ", received " +
-                  that._getTypeName(exprA));
-          } else if (that._getTypeName(exprB) !== requiredType) {
-              throw new Error(
-                  "TypeError: expected " + requiredType + ", received " +
-                  that._getTypeName(exprB));
-          }
-          if (exprA > exprB) {
-            return 1;
-          } else if (exprA < exprB) {
-            return -1;
-          } else {
-            // If they're equal compare the items by their
-            // order to maintain relative order of equal keys
-            // (i.e. to get a stable sort).
-            return a[0] - b[0];
-          }
-        });
-        // Undecorate: extract out the original list elements.
-        for (var j = 0; j < decorated.length; j++) {
-          sortedArray[j] = decorated[j][1];
-        }
-        return sortedArray;
-    },
-
-    _functionMaxBy: function(resolvedArgs) {
-      var exprefNode = resolvedArgs[1];
-      var resolvedArray = resolvedArgs[0];
-      var keyFunction = this.createKeyFunction(exprefNode, [TYPE_NUMBER, TYPE_STRING]);
-      var maxNumber = -Infinity;
-      var maxRecord;
-      var current;
-      for (var i = 0; i < resolvedArray.length; i++) {
-        current = keyFunction(resolvedArray[i]);
-        if (current > maxNumber) {
-          maxNumber = current;
-          maxRecord = resolvedArray[i];
-        }
-      }
-      return maxRecord;
-    },
-
-    _functionMinBy: function(resolvedArgs) {
-      var exprefNode = resolvedArgs[1];
-      var resolvedArray = resolvedArgs[0];
-      var keyFunction = this.createKeyFunction(exprefNode, [TYPE_NUMBER, TYPE_STRING]);
-      var minNumber = Infinity;
-      var minRecord;
-      var current;
-      for (var i = 0; i < resolvedArray.length; i++) {
-        current = keyFunction(resolvedArray[i]);
-        if (current < minNumber) {
-          minNumber = current;
-          minRecord = resolvedArray[i];
-        }
-      }
-      return minRecord;
-    },
-
-    createKeyFunction: function(exprefNode, allowedTypes) {
-      var that = this;
-      var interpreter = this._interpreter;
-      var keyFunc = function(x) {
-        var current = interpreter.visit(exprefNode, x);
-        if (allowedTypes.indexOf(that._getTypeName(current)) < 0) {
-          var msg = "TypeError: expected one of " + allowedTypes +
-                    ", received " + that._getTypeName(current);
-          throw new Error(msg);
-        }
-        return current;
-      };
-      return keyFunc;
+  callFunction(name: string, resolvedArgs: JSONValue[]): JSONValue {
+    const functionEntry = this.functionTable[name];
+    if (functionEntry === undefined) {
+      throw new UnknownFunctionError(`${name}()`);
     }
+    this.#validateArgs(name, resolvedArgs, functionEntry.signature);
+    return functionEntry.func.call(this, resolvedArgs);
+  }
 
-  };
+  /**
+   * Validating the args requires validating
+   * the correct arity and the correct type of each arg.
+   * If the last argument is declared as constiadic, then we need
+   * a minimum number of args to be required.  Otherwise it has to
+   * be an exact amount.
+   */
+  #validateArgs(
+    name: string,
+    args: JSONValue[],
+    signature: RuntimeFunctionTableElementSignature[],
+  ) {
+    if (
+      (
+        signature[signature.length - 1].constiadic &&
+        args.length < signature.length
+      ) ||
+      (
+        !signature[signature.length - 1].constiadic &&
+        args.length !== signature.length
+      )
+    ) {
+      throw new InvalidArityError(fError.expectedAguments(
+        name,
+        signature.length,
+        args.length,
+      ));
+    }
+    let currentSpec;
+    let actualType: TypeCode;
+    let typeMatched;
+    for (const [i, sign] of signature.entries()) {
+      typeMatched = false;
+      currentSpec = sign.types;
+      actualType = this.#getTypeName(args[i]);
+      for (const spec of currentSpec) {
+        if (this.#typeMatches(actualType, spec, args[i])) {
+          typeMatched = true;
+          break;
+        }
+      }
+      if (!typeMatched) {
+        const expected = currentSpec
+          .map(function (typeIdentifier) {
+            return TYPE_NAME[typeIdentifier];
+          })
+          .join(",");
+        throw new InvalidTypeError(
+          fError.expectedValue(
+            `${name}() argument ${(i + 1)} to be type ${expected}`,
+            TYPE_NAME[actualType],
+          ),
+        );
+      }
+    }
+  }
+
+  #typeMatches(
+    actual: TypeCode,
+    expected: TypeCode,
+    argValue: JSONValue,
+  ): boolean {
+    if (expected === TYPE_CODE.Any) {
+      return true;
+    }
+    if (
+      expected === TYPE_CODE.ArrayString ||
+      expected === TYPE_CODE.ArrayNumber ||
+      expected === TYPE_CODE.Array
+    ) {
+      // The expected type can either just be array,
+      // or it can require a specific subtype (array of numbers).
+      //
+      // The simplest case is if "array" with no subtype is specified.
+      if (expected === TYPE_CODE.Array) {
+        return actual === TYPE_CODE.Array;
+      } else if (actual === TYPE_CODE.Array) {
+        // Otherwise we need to check subtypes.
+        // I think this has potential to be improved.
+        let subtype: TypeCode;
+        if (expected === TYPE_CODE.ArrayNumber) {
+          subtype = TYPE_CODE.Number;
+        } else if (expected === TYPE_CODE.ArrayString) {
+          subtype = TYPE_CODE.String;
+        } else {
+          return false;
+        }
+
+        assertIsArray(argValue);
+
+        for (const arg of argValue) {
+          if (
+            !this.#typeMatches(
+              this.#getTypeName(arg),
+              subtype,
+              arg,
+            )
+          ) {
+            return false;
+          }
+        }
+        return true;
+      } else {
+        return false;
+      }
+    } else {
+      return actual === expected;
+    }
+  }
+
+  #getTypeName(obj: JSONValue): TypeCode {
+    const objToString = Object.prototype.toString.call(obj);
+    switch (objToString) {
+      case "[object String]":
+        return TYPE_CODE.String;
+      case "[object Number]":
+        return TYPE_CODE.Number;
+      case "[object Array]":
+        return TYPE_CODE.Array;
+      case "[object Boolean]":
+        return TYPE_CODE.Boolean;
+      case "[object Null]":
+        return TYPE_CODE.Null;
+      case "[object Object]":
+        // Check if it's an expref.  If it has, it's been
+        // tagged with a jmespathType attr of 'Expref';
+        if (
+          (obj as { jmespathType: string }).jmespathType ===
+            TOKEN.Expref
+        ) {
+          return TYPE_CODE.Expref;
+        } else {
+          return TYPE_CODE.Object;
+        }
+      default:
+        unreachable(`Unexpected object type ${objToString}`);
+    }
+  }
+
+  #functionStartsWith(resolvedArgs: [string, string]): boolean {
+    const searchStr = resolvedArgs[0];
+    const prefix = resolvedArgs[1];
+    return searchStr.lastIndexOf(prefix) === 0;
+  }
+
+  #functionEndsWith(resolvedArgs: [string, string]): boolean {
+    const searchStr = resolvedArgs[0];
+    const suffix = resolvedArgs[1];
+    return searchStr.indexOf(suffix, searchStr.length - suffix.length) !==
+      -1;
+  }
+
+  #functionReverse(resolvedArgs: JSONValue[]): JSONValue {
+    const typeName = this.#getTypeName(resolvedArgs[0]);
+    if (typeName === TYPE_CODE.String) {
+      const original = resolvedArgs[0] as string;
+      return original.split("").reverse().join("");
+    } else {
+      const original = resolvedArgs[0] as JSONValue[];
+      return original.toReversed();
+    }
+  }
+
+  #functionAbs(resolvedArgs: [number]): number {
+    return Math.abs(resolvedArgs[0]);
+  }
+
+  #functionCeil(resolvedArgs: [number]): number {
+    return Math.ceil(resolvedArgs[0]);
+  }
+
+  #functionAvg(resolvedArgs: [number[]]): number {
+    const inputArray = resolvedArgs[0];
+    const sum = inputArray.reduce((a, b) => a + b, 0);
+    return (sum / inputArray.length) || 0;
+  }
+
+  #functionContains(resolvedArgs: [JSONArray, string]): boolean {
+    return resolvedArgs[0].indexOf(resolvedArgs[1]) >= 0;
+  }
+
+  #functionFloor(resolvedArgs: [number]): number {
+    return Math.floor(resolvedArgs[0]);
+  }
+
+  #functionLength(resolvedArgs: [string | JSONArray | JSONObject]): number {
+    if (!isObject(resolvedArgs[0])) {
+      return resolvedArgs[0].length;
+    } else {
+      // As far as I can tell, there's no way to get the length
+      // of an object without O(n) iteration through the object.
+      return Object.keys(resolvedArgs[0]).length;
+    }
+  }
+
+  #functionMap(resolvedArgs: [ParserAst, JSONArray]): ParserAst[] {
+    const mapped = [];
+    const interpreter = this._interpreter;
+    const exprefNode = resolvedArgs[0];
+    const elements = resolvedArgs[1];
+    for (const element of elements) {
+      mapped.push(
+        interpreter.visit(exprefNode, element),
+      );
+    }
+    return mapped as ParserAst[];
+  }
+
+  #functionMerge(resolvedArgs: JSONObject[]): JSONObject {
+    const merged: JSONObject = {};
+    for (const current of resolvedArgs) {
+      for (const key of Object.keys(current)) {
+        merged[key] = current[key];
+      }
+    }
+    return merged;
+  }
+
+  #functionMax(resolvedArgs: [JSONArray]): string | number | null {
+    if (resolvedArgs[0].length > 0) {
+      const typeName = this.#getTypeName(resolvedArgs[0][0]);
+      if (typeName === TYPE_CODE.Number) {
+        return Math.max(...resolvedArgs[0] as number[]);
+      } else {
+        const elements = resolvedArgs[0] as string[];
+        let maxElement = elements[0] as string;
+        for (const element of elements) {
+          if (maxElement.localeCompare(element) < 0) {
+            maxElement = element;
+          }
+        }
+        return maxElement;
+      }
+    } else {
+      return null;
+    }
+  }
+
+  #functionMin(resolvedArgs: [JSONArray]): string | number | null {
+    const arg1 = resolvedArgs[0];
+    if (arg1.length > 0) {
+      const typeName = this.#getTypeName(arg1[0]);
+      if (typeName === TYPE_CODE.Number) {
+        return Math.min(...arg1 as number[]);
+      } else {
+        const elements = arg1 as string[];
+        let minElement = elements[0] as string;
+        for (const element of elements) {
+          if (element.localeCompare(minElement) < 0) {
+            minElement = element;
+          }
+        }
+        return minElement;
+      }
+    } else {
+      return null;
+    }
+  }
+
+  #functionSum(resolvedArgs: [number[]]) {
+    const inputArray = resolvedArgs[0];
+    return inputArray.reduce((a, b) => a + b, 0);
+  }
+
+  #functionType(resolvedArgs: JSONValue[]): string {
+    const typeName = this.#getTypeName(resolvedArgs[0]);
+    switch (typeName) {
+      case TYPE_CODE.Number:
+        return "number";
+      case TYPE_CODE.String:
+        return "string";
+      case TYPE_CODE.Array:
+        return "array";
+      case TYPE_CODE.Object:
+        return "object";
+      case TYPE_CODE.Boolean:
+        return "boolean";
+      case TYPE_CODE.Expref:
+        return "expref";
+      case TYPE_CODE.Null:
+        return "null";
+      default:
+        unreachable(`Unexpected type name '${typeName}'`);
+    }
+  }
+
+  #functionKeys(resolvedArgs: [JSONObject]): string[] {
+    return Object.keys(resolvedArgs[0]);
+  }
+
+  #functionValues(resolvedArgs: [JSONObject]): JSONValue[] {
+    const obj = resolvedArgs[0];
+    const keys = Object.keys(obj);
+    const values: JSONValue[] = [];
+    for (const key of keys) {
+      values.push(obj[key]);
+    }
+    return values;
+  }
+
+  #functionJoin(resolvedArgs: [string, JSONArray]): string {
+    const joinChar = resolvedArgs[0];
+    const listJoin = resolvedArgs[1];
+    return listJoin.join(joinChar);
+  }
+
+  #functionToArray(resolvedArgs: JSONValue[]): JSONArray {
+    if (this.#getTypeName(resolvedArgs[0]) === TYPE_CODE.Array) {
+      return resolvedArgs[0] as JSONArray;
+    } else {
+      return [resolvedArgs[0]];
+    }
+  }
+
+  #functionToString(resolvedArgs: JSONValue[]): string {
+    if (this.#getTypeName(resolvedArgs[0]) === TYPE_CODE.String) {
+      return resolvedArgs[0] as string;
+    } else {
+      return JSON.stringify(resolvedArgs[0]);
+    }
+  }
+
+  #functionToNumber(resolvedArgs: JSONValue[]): number | null {
+    const typeName = this.#getTypeName(resolvedArgs[0]);
+    if (typeName === TYPE_CODE.Number) {
+      return resolvedArgs[0] as number;
+    } else if (typeName === TYPE_CODE.String) {
+      const convertedValue = parseFloat(resolvedArgs[0] as string);
+      if (!Number.isNaN(convertedValue)) {
+        return convertedValue;
+      }
+    }
+    return null;
+  }
+
+  #functionNotNull(resolvedArgs: JSONValue[]): JSONValue | null {
+    for (const arg of resolvedArgs) {
+      if (this.#getTypeName(arg) !== TYPE_CODE.Null) {
+        return arg;
+      }
+    }
+    return null;
+  }
+
+  #functionSort(resolvedArgs: JSONArray[]): JSONArray {
+    const sortedArray = resolvedArgs[0].slice(0);
+    sortedArray.sort();
+    return sortedArray;
+  }
+
+  #functionSortBy(resolvedArgs: [JSONArray, ParserAst]): JSONArray {
+    const sortedArray = resolvedArgs[0].slice(0);
+    if (sortedArray.length === 0) {
+      return sortedArray;
+    }
+    const interpreter = this._interpreter;
+    const exprefNode = resolvedArgs[1];
+    const requiredType = this.#getTypeName(
+      interpreter.visit(exprefNode, sortedArray[0]),
+    );
+    const validCodeTypes = [TYPE_CODE.Number, TYPE_CODE.String];
+    if (
+      validCodeTypes.indexOf(requiredType as 0) < 0
+    ) {
+      throw new InvalidTypeError(
+        fError.expectedValue(
+          `one of [${mapTypeCodeToName(...validCodeTypes).toString()}]`,
+          mapTypeCodeToName(requiredType).toString(),
+        ),
+      );
+    }
+    // In order to get a stable sort out of an unstable
+    // sort algorithm, we decorate/sort/undecorate (DSU)
+    // by creating a new list of [index, element] pairs.
+    // In the cmp function, if the evaluated elements are
+    // equal, then the index will be used as the tiebreaker.
+    // After the decorated list has been sorted, it will be
+    // undecorated to extract the original elements.
+    const decorated: JSONValue[][] = [];
+    for (const [i, el] of sortedArray.entries()) {
+      decorated.push([i, el]);
+    }
+    decorated.sort((a, b) => {
+      const exprA = interpreter.visit(
+        exprefNode,
+        a[1],
+      );
+      const exprB = interpreter.visit(
+        exprefNode,
+        b[1],
+      );
+      if (this.#getTypeName(exprA) !== requiredType) {
+        throw new InvalidTypeError(
+          fError.expectedValue(
+            mapTypeCodeToName(requiredType).toString(),
+            mapTypeCodeToName(this.#getTypeName(exprA)).toString(),
+          ),
+        );
+      } else if (this.#getTypeName(exprB) !== requiredType) {
+        throw new InvalidTypeError(
+          fError.expectedValue(
+            mapTypeCodeToName(requiredType).toString(),
+            mapTypeCodeToName(this.#getTypeName(exprB)).toString(),
+          ),
+        );
+      }
+      if (exprA! > exprB!) {
+        return 1;
+      } else if (exprA! < exprB!) {
+        return -1;
+      } else {
+        // If they're equal compare the items by their
+        // order to maintain relative order of equal keys
+        // (i.e. to get a stable sort).
+        return (a as number[])[0] - (b as number[])[0];
+      }
+    });
+    // Undecorate: extract out the original list elements.
+    for (const [i, el] of decorated.entries()) {
+      sortedArray[i] = el[1];
+    }
+    return sortedArray;
+  }
+
+  #functionMaxBy(resolvedArgs: [JSONArray, ParserAst]): JSONValue {
+    const exprefNode = resolvedArgs[1];
+    const resolvedArray = resolvedArgs[0];
+    const keyFunction = this.createKeyFunction(exprefNode, [
+      TYPE_CODE.Number,
+      TYPE_CODE.String,
+    ]);
+    let maxNumber: number = -Infinity;
+    let maxRecord: JSONValue = null;
+    let current: number;
+    for (const el of resolvedArray) {
+      current = keyFunction(
+        el,
+      ) as unknown as number;
+      if (current > maxNumber) {
+        maxNumber = current;
+        maxRecord = el;
+      }
+    }
+    return maxRecord;
+  }
+
+  #functionMinBy(resolvedArgs: [JSONArray, ParserAst]): JSONValue {
+    const exprefNode = resolvedArgs[1];
+    const resolvedArray = resolvedArgs[0];
+    const keyFunction = this.createKeyFunction(exprefNode, [
+      TYPE_CODE.Number,
+      TYPE_CODE.String,
+    ]);
+    let minNumber: number = Infinity;
+    let minRecord: JSONValue = null;
+    let current: number;
+    for (const el of resolvedArray) {
+      current = keyFunction(
+        el,
+      ) as unknown as number;
+      if (current < minNumber) {
+        minNumber = current;
+        minRecord = el;
+      }
+    }
+    return minRecord;
+  }
+
+  createKeyFunction(
+    exprefNode: ParserAst,
+    allowedTypes: TypeCode[],
+  ): (x: JSONValue) => ParserAst {
+    const interpreter = this._interpreter;
+    const keyFunc = (x: JSONValue): ParserAst => {
+      const current = interpreter.visit(exprefNode, x);
+      if (allowedTypes.indexOf(this.#getTypeName(current)) < 0) {
+        throw new InvalidTypeError(
+          fError.expectedValue(
+            `one of [${mapTypeCodeToName(...allowedTypes).toString()}]`,
+            mapTypeCodeToName(this.#getTypeName(current)).toString(),
+          ),
+        );
+      }
+      return current as ParserAst;
+    };
+    return keyFunc;
+  }
+}
