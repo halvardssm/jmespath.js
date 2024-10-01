@@ -33,15 +33,6 @@
     "dependencies": [
       "jsr:@std/assert@1",
       "jsr:@std/path@^1"
-    ],
-    "packageJson": {
-      "dependencies": [
-        "npm:grunt-contrib-jshint@^0.11.0",
-        "npm:grunt-contrib-uglify@^0.11.1",
-        "npm:grunt-eslint@^17.3.1",
-        "npm:grunt@^0.4.5",
-        "npm:mocha@^2.1.0"
-      ]
-    }
+    ]
   }
 }
