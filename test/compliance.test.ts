@@ -1,11 +1,12 @@
 import { join, resolve } from "@std/path";
 import { assertEquals, assertThrows } from "@std/assert";
-
-import { search } from "../lib/mod.js";
+import { JmesPath } from "../mod.ts";
+import type { JSONValue } from "../lib/structs.ts";
+import { ErrorCodeToErrorMap } from "../lib/errors.ts";
 
 type ComplianceTestCases = {
   expression: string;
-  result: unknown;
+  result: JSONValue;
   error?: string;
 };
 type ComplianceTest = {
@@ -40,9 +41,11 @@ for (const listing of listings) {
             await t.step("should throw error for test " + j, () => {
               assertThrows(
                 () => {
-                  search(given, testCase.expression);
+                  new JmesPath(given).search(testCase.expression);
                 },
-                Error,
+                ErrorCodeToErrorMap[testCase.error!],
+                testCase.error,
+                `failed for ${testCase.expression} expected ${testCase.error}`,
               );
             });
           } else {
@@ -50,7 +53,7 @@ for (const listing of listings) {
               `should pass test ${j} expression: ${testCase.expression}`,
               () => {
                 assertEquals(
-                  search(given, testCase.expression),
+                  new JmesPath(given).search(testCase.expression),
                   testCase.result,
                 );
               },
