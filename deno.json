@@ -2,7 +2,8 @@
   "name": "@halvardm/jmespath",
   "version": "0.17.0",
   "exports": {
-    ".":"./mod.ts"
+    ".": "./mod.ts",
+    "./bin": "./bin.ts"
   },
   "tasks": {
     "test": "deno test --allow-read",

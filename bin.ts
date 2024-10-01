@@ -1,23 +1,24 @@
-#!/usr/bin/env node
-jmespath = require('./jmespath');
+#!/usr/bin/env -S deno run
 
-process.stdin.setEncoding('utf-8');
+import { JmesPath } from "./mod.ts";
 
-
-if (process.argv.length < 2) {
-    console.log("Must provide a jmespath expression.");
-    process.exit(1);
+if (Deno.args.length < 1) {
+  console.error("Must provide a jmespath expression.");
+  Deno.exit(1);
 }
-var inputJSON = "";
 
-process.stdin.on('readable', function() {
-    var chunk = process.stdin.read();
-    if (chunk !== null) {
-        inputJSON += chunk;
-    }
-});
+const inputJSON: string[] = [];
 
-process.stdin.on('end', function() {
-    var parsedInput = JSON.parse(inputJSON);
-    console.log(JSON.stringify(jmespath.search(parsedInput, process.argv[2])));
-});
+const decoder = new TextDecoder();
+for await (const chunk of Deno.stdin.readable) {
+  const text = decoder.decode(chunk);
+  inputJSON.push(text);
+}
+
+const expression = Deno.args[0];
+
+const parsedInput = JSON.parse(inputJSON.join(""));
+
+const res = new JmesPath(parsedInput).search(expression);
+
+console.info(JSON.stringify(res));
